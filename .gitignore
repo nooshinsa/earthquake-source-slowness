@@ -1,0 +1,30 @@
+# macOS / editor files
+.DS_Store
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Large waveform / response downloads and generated results
+THETHA/
+*.mseed
+*.miniseed
+*.sac
+*.SAC
+*.xml
+RESP.*
+*.sacpz
+python_code/theta_results/
+python_code/test_*/results.txt
+resp
+
+# Runtime/debug outputs
+*.log
+fort.*
+results.*
