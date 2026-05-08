@@ -1,6 +1,6 @@
 """
-Travel Time and Slowness Module - Python conversion of Fortran routines
-Handles P-wave travel times, slowness (ray parameter), and geometric spreading.
+Travel Time and Ray Parameter Module - Python conversion of Fortran routines
+Handles P-wave travel times, ray parameter p, and geometric spreading.
 """
 
 import numpy as np
@@ -22,7 +22,7 @@ class JBTables:
     """
     Jeffreys-Bullen P-wave travel time tables.
     
-    Provides travel times and ray parameters (slowness) for P-waves
+    Provides travel times and P-wave ray parameters
     as a function of epicentral distance and source depth.
     
     Attributes
@@ -196,9 +196,9 @@ class JBTables:
         
         return t0 * dep_w1 + t1 * dep_w2
     
-    def get_slowness(self, distance_deg: float, depth_km: float) -> float:
+    def get_ray_parameter(self, distance_deg: float, depth_km: float) -> float:
         """
-        Get ray parameter (slowness) p = dT/dΔ.
+        Get P-wave ray parameter p = dT/dΔ.
         
         Parameters
         ----------
@@ -231,6 +231,15 @@ class JBTables:
             return (t2 - t1) / (2 * delta)
         else:
             return 0.0
+
+    def get_slowness(self, distance_deg: float, depth_km: float) -> float:
+        """
+        Backward-compatible alias for get_ray_parameter().
+
+        In this package, prefer the term "ray parameter p" to avoid confusing
+        p with the earthquake source parameter Theta.
+        """
+        return self.get_ray_parameter(distance_deg, depth_km)
     
     def _interp_weights(self, x: float, arr: np.ndarray) -> Tuple[int, float, float]:
         """Get interpolation index and weights."""
@@ -291,7 +300,7 @@ def compute_geometric_spreading(distance_deg: float, depth_km: float,
     """
     reth = EARTH_RADIUS_KM
     
-    # Convert slowness to s/km
+    # Convert ray parameter p to s/km
     p = slowness_deg * RAD_TO_DEG / reth  # s/km
     
     # Approximate source region parameters
@@ -437,8 +446,8 @@ def compute_radiation_coefficients(distance_deg: float, depth_km: float,
     if jb_tables is None:
         jb_tables = JBTables()
     
-    # Get slowness (ray parameter)
-    p = jb_tables.get_slowness(distance_deg, depth_km)  # s/deg
+    # Get P-wave ray parameter p.
+    p = jb_tables.get_ray_parameter(distance_deg, depth_km)  # s/deg
     
     # Receiver parameters (mantle values)
     alphar = 7.0  # km/s
@@ -623,11 +632,11 @@ def compute_tstar(freq: float) -> float:
 
 
 # =============================================================================
-# SLOWNESS PARAMETER CALCULATIONS
+# RAY PARAMETER CALCULATIONS
 # =============================================================================
-def slowness_to_different_units(p_deg: float) -> dict:
+def ray_parameter_to_different_units(p_deg: float) -> dict:
     """
-    Convert slowness from s/deg to other units.
+    Convert ray parameter p from s/deg to other units.
     
     Parameters
     ----------
@@ -637,7 +646,7 @@ def slowness_to_different_units(p_deg: float) -> dict:
     Returns
     -------
     dict
-        Slowness in different units:
+        Ray parameter p in different units:
         - 'p_deg': s/deg
         - 'p_km': s/km
         - 'p_rad': s/rad
@@ -654,10 +663,17 @@ def slowness_to_different_units(p_deg: float) -> dict:
     }
 
 
-def slowness_from_travel_time_gradient(t1: float, t2: float, 
-                                        d1: float, d2: float) -> float:
+def slowness_to_different_units(p_deg: float) -> dict:
     """
-    Calculate slowness from travel time gradient.
+    Backward-compatible alias for ray_parameter_to_different_units().
+    """
+    return ray_parameter_to_different_units(p_deg)
+
+
+def ray_parameter_from_travel_time_gradient(t1: float, t2: float,
+                                            d1: float, d2: float) -> float:
+    """
+    Calculate ray parameter p from travel time gradient.
     
     Parameters
     ----------
@@ -669,17 +685,25 @@ def slowness_from_travel_time_gradient(t1: float, t2: float,
     Returns
     -------
     float
-        Slowness in s/deg
+        Ray parameter p in s/deg
     """
     if d2 != d1:
         return (t2 - t1) / (d2 - d1)
     return 0.0
 
 
-def takeoff_angle_from_slowness(p_deg: float, velocity_km_s: float,
-                                 depth_km: float = 0.0) -> float:
+def slowness_from_travel_time_gradient(t1: float, t2: float,
+                                        d1: float, d2: float) -> float:
     """
-    Calculate takeoff angle from slowness.
+    Backward-compatible alias for ray_parameter_from_travel_time_gradient().
+    """
+    return ray_parameter_from_travel_time_gradient(t1, t2, d1, d2)
+
+
+def takeoff_angle_from_ray_parameter(p_deg: float, velocity_km_s: float,
+                                     depth_km: float = 0.0) -> float:
+    """
+    Calculate takeoff angle from ray parameter p.
     
     Parameters
     ----------
@@ -712,6 +736,14 @@ def takeoff_angle_from_slowness(p_deg: float, velocity_km_s: float,
     return np.arcsin(sin_i) * RAD_TO_DEG
 
 
+def takeoff_angle_from_slowness(p_deg: float, velocity_km_s: float,
+                                 depth_km: float = 0.0) -> float:
+    """
+    Backward-compatible alias for takeoff_angle_from_ray_parameter().
+    """
+    return takeoff_angle_from_ray_parameter(p_deg, velocity_km_s, depth_km)
+
+
 if __name__ == "__main__":
     print("Testing travel_time.py")
     
@@ -724,13 +756,13 @@ if __name__ == "__main__":
     t = jb.get_travel_time(dist, depth)
     print(f"Travel time at Δ={dist}°, h={depth}km: {t:.2f} s")
     
-    # Test slowness
-    p = jb.get_slowness(dist, depth)
-    print(f"Slowness: {p:.3f} s/deg")
+    # Test ray parameter p
+    p = jb.get_ray_parameter(dist, depth)
+    print(f"Ray parameter p: {p:.3f} s/deg")
     
-    # Convert slowness units
-    p_units = slowness_to_different_units(p)
-    print(f"Slowness: {p_units['p_km']:.4f} s/km, {p_units['p_rad']:.2f} s/rad")
+    # Convert ray parameter p units
+    p_units = ray_parameter_to_different_units(p)
+    print(f"Ray parameter p: {p_units['p_km']:.4f} s/km, {p_units['p_rad']:.2f} s/rad")
     
     # Test radiation coefficients
     coeffs = compute_radiation_coefficients(

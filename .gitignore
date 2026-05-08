@@ -13,6 +13,7 @@ env/
 
 # Large waveform / response downloads and generated results
 THETHA/
+BOL_*/
 *.mseed
 *.miniseed
 *.sac

@@ -96,7 +96,7 @@ results = []
 print(f"\n{'='*70}")
 print("PROCESSING STATIONS:")
 print(f"{'='*70}")
-print(f"{'Station':<15} {'Dist(°)':>8} {'Az(°)':>8} {'Slowness':>10} {'Energy':>12} {'Θ':>8}")
+print(f"{'Station':<15} {'Dist(°)':>8} {'Az(°)':>8} {'p(s/deg)':>10} {'Energy':>12} {'Θ':>8}")
 print("-"*70)
 
 for network in inventory:
@@ -132,7 +132,7 @@ for network in inventory:
             if dist_deg < min_dist or dist_deg > max_dist:
                 continue
             
-            # Get slowness from JB tables
+            # Get ray parameter p from JB tables
             slowness = jb_tables.get_slowness(dist_deg, EVENT['depth_km'])
             
             # Remove instrument response (convert to velocity m/s)
@@ -250,4 +250,3 @@ if results:
     
 else:
     print("No stations processed successfully!")
-

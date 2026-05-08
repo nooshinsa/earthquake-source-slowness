@@ -635,22 +635,24 @@ def read_georom_format(filename: str) -> InstrumentResponse:
             
             elif header.startswith('POLES'):
                 # Format: POLES  A/B  start  end  values...
-                ptype = parts[0][7] if len(parts[0]) > 7 else 'A'
+                ptype = parts[1] if len(parts) > 1 and parts[1] in ('A', 'B') else 'A'
                 if ptype == 'B':
                     response_type = 'B'
-                start = int(parts[1])
-                end = int(parts[2])
-                values = [float(x) for x in parts[3:]]
+                offset = 2 if len(parts) > 1 and parts[1] in ('A', 'B') else 1
+                start = int(parts[offset])
+                end = int(parts[offset + 1])
+                values = [float(x) for x in parts[offset + 2:]]
                 for j in range(0, len(values) - 1, 2):
                     poles_list.append(complex(values[j], values[j + 1]))
             
             elif header.startswith('ZEROS'):
-                ptype = parts[0][7] if len(parts[0]) > 7 else 'A'
+                ptype = parts[1] if len(parts) > 1 and parts[1] in ('A', 'B') else 'A'
                 if ptype == 'B':
                     response_type = 'B'
-                start = int(parts[1])
-                end = int(parts[2])
-                values = [float(x) for x in parts[3:]]
+                offset = 2 if len(parts) > 1 and parts[1] in ('A', 'B') else 1
+                start = int(parts[offset])
+                end = int(parts[offset + 1])
+                values = [float(x) for x in parts[offset + 2:]]
                 for j in range(0, len(values) - 1, 2):
                     zeros_list.append(complex(values[j], values[j + 1]))
             
@@ -777,4 +779,3 @@ if __name__ == "__main__":
     print(f"Poles/zeros response at 0.1 Hz: |H|={abs(resp):.2e}, phase={np.angle(resp)*180/PI:.2f}°")
     
     print("All tests passed!")
-

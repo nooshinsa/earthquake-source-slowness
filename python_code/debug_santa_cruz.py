@@ -182,7 +182,7 @@ try:
     from travel_time import JBTables
     jb = JBTables()
     slowness = jb.get_slowness(test_sta['dist'], EVENT['depth_km'])
-    print(f"   ✓ JB tables: slowness = {slowness:.4f} s/deg")
+    print(f"   ✓ JB tables: ray parameter p = {slowness:.4f} s/deg")
 except Exception as e:
     print(f"   ✗ JB tables error: {e}")
     traceback.print_exc()
@@ -262,6 +262,5 @@ except Exception as e:
 print("\n" + "="*70)
 print("DEBUG COMPLETE")
 print("="*70)
-
 
 

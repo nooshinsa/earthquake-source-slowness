@@ -134,7 +134,7 @@ def test_single_event():
     print("\n" + "-"*70)
     print("PROCESSING STATIONS:")
     print("-"*70)
-    print(f"{'Station':<12} {'Dist':>8} {'Az':>8} {'Slowness':>10} {'Θ':>8}")
+    print(f"{'Station':<12} {'Dist':>8} {'Az':>8} {'p(s/deg)':>10} {'Θ':>8}")
     print("-"*70)
     
     for network in inventory:
@@ -166,7 +166,7 @@ def test_single_event():
                 if dist_deg < min_dist or dist_deg > max_dist:
                     continue
                 
-                # Get slowness
+                # Get ray parameter p
                 slowness = jb_tables.get_slowness(dist_deg, depth)
                 
                 # Remove instrument response
@@ -258,6 +258,5 @@ def test_single_event():
 
 if __name__ == "__main__":
     test_single_event()
-
 
 

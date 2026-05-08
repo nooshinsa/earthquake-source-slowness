@@ -9,6 +9,7 @@ where E is the radiated seismic energy and M0 is the seismic moment.
 """
 
 import numpy as np
+import re
 from typing import Tuple, Optional, Dict
 from dataclasses import dataclass
 
@@ -154,8 +155,8 @@ def compute_seismic_energy(
     # Calculate distance and azimuth
     dist_deg, az_es, az_se, gc = great_circle(elat, elon, slat, slon)
     
-    # Get slowness (ray parameter)
-    p_deg = jb_tables.get_slowness(dist_deg, depth_km)
+    # Get P-wave ray parameter p.
+    p_deg = jb_tables.get_ray_parameter(dist_deg, depth_km)
     p_km = p_deg / DEG_TO_KM
     p_rad = p_deg * 180.0 / PI
     
@@ -177,7 +178,7 @@ def compute_seismic_energy(
     
     print(f"Station: {station_code}")
     print(f"Distance: {dist_deg:.2f}°, Azimuth: {az_es:.2f}°")
-    print(f"Slowness: p = {p_deg:.3f} s/deg = {p_km:.5f} s/km = {p_rad:.2f} s/rad")
+    print(f"Ray parameter p: p = {p_deg:.3f} s/deg = {p_km:.5f} s/km = {p_rad:.2f} s/rad")
     print(f"Radiation: Fp = {coeffs['Fp']:.3f}, Fpp = {coeffs['Fpp']:.3f}, Fsp = {coeffs['Fsp']:.3f}")
     print(f"Reflection: PP = {coeffs['PP']:.3f}, SP = {coeffs['SP']:.3f}")
     print(f"(FgP)² = {FgP2:.4f}, Estimated (FgP)² = {est_FgP2:.4f}")
@@ -427,6 +428,12 @@ def read_sac_format_data(filename: str) -> Tuple[np.ndarray, dict]:
         parts = line1.split()
         metadata['station'] = parts[0][:3]
         metadata['component'] = parts[0][3] if len(parts[0]) > 3 else 'Z'
+        if len(parts) >= 6:
+            metadata['year'] = int(parts[1])
+            metadata['julian_day'] = int(parts[2])
+            metadata['hour'] = int(parts[3])
+            metadata['minute'] = int(parts[4])
+            metadata['second'] = float(parts[5])
         
         # Second line: nx, dt
         line2 = f.readline().strip().split()
@@ -435,9 +442,23 @@ def read_sac_format_data(filename: str) -> Tuple[np.ndarray, dict]:
         metadata['nx'] = nx
         metadata['dt'] = dt
         
-        # Read data
-        data_lines = f.read().split()
-        data = np.array([float(x) for x in data_lines[:nx]])
+        # Read fixed-width Fortran samples until nx values are collected.
+        # Old THETA files use FORMAT(5e14.7), often with no spaces between
+        # adjacent values.
+        values = []
+        float_pattern = re.compile(r'[+-]?\d*\.\d+(?:[EeDd][+-]?\d+)?')
+        for line in f:
+            if len(values) >= nx:
+                break
+            for match in float_pattern.findall(line):
+                values.append(float(match.replace('D', 'E').replace('d', 'E')))
+                if len(values) >= nx:
+                    break
+
+        if len(values) < nx:
+            raise ValueError(f"Expected {nx} samples in {filename}, found {len(values)}")
+
+        data = np.array(values[:nx])
     
     return data, metadata
 
@@ -704,10 +725,9 @@ if __name__ == "__main__":
     print("SUMMARY:")
     print(f"Station: {result.station}")
     print(f"Distance: {result.distance_deg:.2f}°")
-    print(f"Slowness: {result.slowness_deg:.3f} s/deg")
+    print(f"Ray parameter p: {result.slowness_deg:.3f} s/deg")
     print(f"Energy (estimated): {result.energy_estimated:.3e} ergs")
     print(f"Θ (estimated): {result.theta_estimated:.2f}")
     print(f"Event type: {classify_event(result.theta_estimated)}")
     
     print("\nAll tests passed!")
-

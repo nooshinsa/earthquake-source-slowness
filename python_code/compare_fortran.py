@@ -106,7 +106,7 @@ print(f"   p = {slowness_deg:.4f} s/deg")
 print(f"   p = {slowness_km:.6f} s/km")
 print(f"   p = {slowness_rad:.2f} s/rad")
 print(f"")
-print(f"   >>> FORTRAN slowness: ???")
+print(f"   >>> FORTRAN ray parameter p: ???")
 
 # ============================================================
 # GEOMETRIC SPREADING
@@ -222,5 +222,4 @@ Please check your Fortran code for these values:
 """.format(FgP2_corrected, g_spread))
 
 print("="*70)
-
 

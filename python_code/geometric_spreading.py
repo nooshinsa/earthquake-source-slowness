@@ -239,7 +239,7 @@ def compute_geometric_spreading_fortran(
     reth = EARTH_RADIUS_KM
     pi = np.pi
     
-    # Convert slowness to s/rad then to s/km
+    # Convert ray parameter p to s/rad then to s/km
     p_rad = slowness_deg * 180.0 / pi  # s/rad
     p = p_rad / reth  # s/km
     
@@ -359,7 +359,7 @@ if __name__ == "__main__":
     
     print(f"Distance: {distance}°")
     print(f"Depth: {depth} km")
-    print(f"Slowness: {slowness} s/deg")
+    print(f"Ray parameter p: {slowness} s/deg")
     
     # Try to load tables
     tables = GeometricSpreadingTables()

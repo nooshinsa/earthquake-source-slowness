@@ -1,11 +1,11 @@
 # THETA Calculator - Python Implementation
 
-Python conversion of Fortran seismological routines for computing **slowness parameters** and **seismic radiated energy**.
+Python conversion of Fortran seismological routines for computing the **P-wave ray parameter p** and **seismic radiated energy**.
 
 ## Overview
 
 This package computes:
-- **Slowness (ray parameter)** `p` - the rate of change of travel time with distance
+- **P-wave ray parameter** `p` - the rate of change of travel time with distance
 - **Seismic radiated energy** `E` - energy released during an earthquake
 - **Theta parameter** `Θ = log10(E/M0)` - energy-to-moment ratio
 
@@ -56,7 +56,7 @@ Seismometer instrument response handling:
 - RESP file reading
 
 ### `travel_time.py`
-P-wave travel times and slowness:
+P-wave travel times and ray parameter p:
 - Jeffreys-Bullen table interpolation
 - Ray parameter computation
 - Geometric spreading
@@ -74,23 +74,23 @@ Command-line interface and demo script.
 
 ## Usage Examples
 
-### Computing Slowness
+### Computing Ray Parameter p
 
 ```python
-from travel_time import JBTables, slowness_to_different_units
+from travel_time import JBTables, ray_parameter_to_different_units
 
 # Initialize JB tables
 jb = JBTables()
 
-# Get slowness at 60° distance, 33 km depth
+# Get ray parameter p at 60° distance, 33 km depth
 distance = 60.0  # degrees
 depth = 33.0     # km
 
-slowness = jb.get_slowness(distance, depth)
-print(f"Slowness: {slowness:.4f} s/deg")
+p_deg = jb.get_ray_parameter(distance, depth)
+print(f"Ray parameter p: {p_deg:.4f} s/deg")
 
 # Convert to other units
-p = slowness_to_different_units(slowness)
+p = ray_parameter_to_different_units(p_deg)
 print(f"p = {p['p_km']:.6f} s/km")
 print(f"p = {p['p_rad']:.2f} s/rad")
 ```
@@ -168,8 +168,8 @@ print(f"Classification: {classify_event(result.theta_estimated)}")
 
 ## Physical Background
 
-### Slowness (Ray Parameter)
-The slowness `p = dT/dΔ` represents how travel time changes with epicentral distance. It's related to the takeoff angle by Snell's law:
+### Ray Parameter p
+The P-wave ray parameter `p = dT/dΔ` represents how travel time changes with epicentral distance. It is related to the takeoff angle by Snell's law:
 
 ```
 p = sin(i) / v
@@ -246,4 +246,3 @@ python energy_calculation.py
 3. Choy, G. L. and V. F. Cormier (1986). Direct measurement of the mantle attenuation operator from broadband P and S waveforms. *J. Geophys. Res.*, 91, 7326-7342.
 
 4. Aki, K. and P. G. Richards (2002). *Quantitative Seismology*, 2nd ed. University Science Books.
-

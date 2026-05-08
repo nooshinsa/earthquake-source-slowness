@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-THETA Calculator - Seismic Energy and Slowness Analysis
+THETA Calculator - Seismic Energy and Ray Parameter Analysis
 
 Python implementation of Fortran seismological routines for computing:
-- Slowness (ray parameter) p
+- P-wave ray parameter p
 - Seismic radiated energy E
 - Theta parameter Θ = log10(E/M0)
 
@@ -26,7 +26,7 @@ from typing import Optional
 # Import our modules
 from seismic_utils import great_circle, find_fft_size, seconds_to_hms
 from instrument_response import InstrumentResponse, compute_response_array
-from travel_time import JBTables, slowness_to_different_units, compute_radiation_coefficients
+from travel_time import JBTables, ray_parameter_to_different_units, compute_radiation_coefficients
 from energy_calculation import (
     compute_seismic_energy, EnergyResult, classify_event,
     read_epicenter_parameters, read_sac_format_data
@@ -39,10 +39,10 @@ def print_banner():
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
 ║                    THETA CALCULATOR                           ║
-║         Seismic Energy & Slowness Parameter Analysis          ║
+║         Seismic Energy & Ray Parameter Analysis               ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Computes:                                                    ║
-║    • Slowness (ray parameter) p                               ║
+║    • P-wave ray parameter p                                   ║
 ║    • Radiated seismic energy E                                ║
 ║    • Energy-to-moment ratio Θ = log10(E/M0)                   ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -78,17 +78,17 @@ def run_demo():
     print(f"   Azimuth (event→station): {az_es:.2f}°")
     print(f"   Back azimuth: {az_se:.2f}°")
     
-    # Get travel time and slowness
-    print("\n4. Computing P-wave travel time and slowness...")
+    # Get travel time and ray parameter p.
+    print("\n4. Computing P-wave travel time and ray parameter p...")
     travel_time = jb.get_travel_time(dist_deg, depth)
-    slowness = jb.get_slowness(dist_deg, depth)
+    p_deg = jb.get_ray_parameter(dist_deg, depth)
     
     h, m, s = seconds_to_hms(travel_time)
     print(f"   P-wave travel time: {h:02d}:{m:02d}:{s:05.2f} ({travel_time:.2f} s)")
     
-    # Convert slowness to different units
-    p_units = slowness_to_different_units(slowness)
-    print(f"\n5. Slowness (ray parameter):")
+    # Convert ray parameter p to different units
+    p_units = ray_parameter_to_different_units(p_deg)
+    print(f"\n5. Ray parameter p:")
     print(f"   p = {p_units['p_deg']:.4f} s/deg")
     print(f"   p = {p_units['p_km']:.6f} s/km")
     print(f"   p = {p_units['p_rad']:.2f} s/rad")
@@ -185,7 +185,7 @@ def run_demo():
     print(f"  Depth: {result.depth_km:.1f} km")
     print(f"  Depth bin: {result.depth_bin}")
     print(f"")
-    print(f"  Slowness (p):")
+    print(f"  Ray parameter p:")
     print(f"    {result.slowness_deg:.4f} s/deg")
     print(f"    {result.slowness_km:.6f} s/km")
     print(f"")
@@ -291,7 +291,7 @@ def process_data(data_file: str, response_file: str, epicenter_file: str,
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="THETA Calculator - Seismic Energy and Slowness Analysis",
+        description="THETA Calculator - Seismic Energy and Ray Parameter Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -335,4 +335,3 @@ For more information, see the documentation.
 
 if __name__ == "__main__":
     main()
-
