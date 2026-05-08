@@ -24,12 +24,73 @@ pip install -r requirements.txt
 
 ### Demo with synthetic data
 ```bash
-python theta_calculator.py --demo
+python python_code/theta_calculator.py --demo
 ```
 
-### Process real data
+### Process a Fortran-style event folder
+
+This is the most validated workflow right now. The event folder must contain:
+
+```text
+Epicenter.parameters
+records
+station waveform/response files listed in records
+```
+
+Each station file should follow the original THETA/GeoRom text format: header,
+sample count and `dt`, packed waveform samples, station coordinates, poles,
+zeros, gain, unit, and `ENDOFILE`.
+
+Example:
+
 ```bash
-python theta_calculator.py \
+python python_code/theta_calculator.py run-folder BOL_19 \
+  --moment 4.2e25 \
+  --strike 2215 \
+  --dip 15 \
+  --rake 92 \
+  --output BOL_19/theta_python_results.csv
+```
+
+The output CSV includes station distance, azimuth, ray parameter `p`, estimated
+Theta, true-mechanism Theta, energy values, and optional Python-minus-Fortran
+residuals when `results.en` is present in the event folder.
+
+### Download waveforms and responses
+
+If ObsPy is installed, the code can download MiniSEED waveforms and StationXML
+responses for one event:
+
+```bash
+python python_code/theta_calculator.py download-event \
+  --event-id BOL_2019 \
+  --origin-time 2019-03-15T05:03:50.1 \
+  --latitude -17.74 \
+  --longitude -65.90 \
+  --depth 381 \
+  --magnitude 6.3 \
+  --moment 4.2e25 \
+  --strike 2215 \
+  --dip 15 \
+  --rake 92 \
+  --networks II,IU \
+  --channel BHZ \
+  --min-distance 30 \
+  --max-distance 80 \
+  --pre-origin 60 \
+  --post-origin 1800 \
+  --output-dir python_code/theta_results
+```
+
+Download filters currently include network, channel, minimum/maximum epicentral
+distance, and time window around the origin. The MiniSEED + StationXML download
+workflow is useful for collecting data, but the fully validated calculation
+workflow is still the Fortran-style event folder.
+
+### Process one real data file
+
+```bash
+python python_code/theta_calculator.py \
     --data seismogram.dat \
     --response response.dat \
     --epicenter epicenter.dat \
@@ -225,16 +286,30 @@ Where:
 Run the demo to verify installation:
 
 ```bash
-python theta_calculator.py --demo
+python python_code/theta_calculator.py --demo
 ```
 
-Run module tests:
+Run the validated BOL_19 folder comparison if the local validation data is
+available:
 
 ```bash
-python seismic_utils.py
-python instrument_response.py
-python travel_time.py
-python energy_calculation.py
+python python_code/theta_calculator.py run-folder BOL_19 \
+  --moment 4.2e25 \
+  --strike 2215 \
+  --dip 15 \
+  --rake 92
+```
+
+This should give a mean Python-minus-Fortran estimated-Theta residual near
+`-0.01` and a median absolute residual near `0.04`.
+
+Run module smoke tests:
+
+```bash
+python python_code/seismic_utils.py
+python python_code/instrument_response.py
+python python_code/travel_time.py
+python python_code/energy_calculation.py
 ```
 
 ## References

@@ -19,6 +19,10 @@ Date: 2025
 """
 
 import argparse
+import csv
+import contextlib
+import io
+import os
 import numpy as np
 import sys
 from typing import Optional
@@ -32,6 +36,8 @@ from energy_calculation import (
     read_epicenter_parameters, read_sac_format_data
 )
 from depth_bins import print_depth_bin_info, DEPTH_BIN_SUMMARY
+from depth_bins import compute_time_window
+from instrument_response import read_georom_format
 
 
 def print_banner():
@@ -288,6 +294,255 @@ def process_data(data_file: str, response_file: str, epicenter_file: str,
     print(f"  Classification: {classify_event(result.theta_estimated)}")
 
 
+def seconds_of_day(hour: int, minute: int, second: float) -> float:
+    """Return seconds from midnight."""
+    return hour * 3600.0 + minute * 60.0 + second
+
+
+def read_station_coordinates_from_georom(filename: str) -> tuple[float, float]:
+    """Read station latitude/longitude embedded in a Fortran GeoRom data file."""
+    lat = None
+    lon = None
+    with open(filename, "r") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 4 and parts[0] == "LATITUDE":
+                lat = float(parts[-1])
+            elif len(parts) >= 4 and parts[0] == "LONGITUD":
+                lon = float(parts[-1])
+            if lat is not None and lon is not None:
+                return lat, lon
+    raise ValueError(f"No LATITUDE/LONGITUD response lines found in {filename}")
+
+
+def read_fortran_theta_results(filename: str) -> dict:
+    """Read optional Fortran results.en comparison file."""
+    results = {}
+    if not filename or not os.path.exists(filename):
+        return results
+
+    with open(filename, "r") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 6:
+                results[parts[0]] = {
+                    "fortran_distance_deg": float(parts[1]),
+                    "fortran_azimuth": float(parts[2]),
+                    "fortran_theta_estimated": float(parts[3]),
+                    "fortran_theta_true": float(parts[4]),
+                    "fortran_moment": float(parts[5]),
+                }
+    return results
+
+
+def run_event_folder(
+    folder: str,
+    moment: float,
+    strike: float,
+    dip: float,
+    rake: float,
+    output: Optional[str] = None,
+    compare_file: Optional[str] = None,
+    verbose: bool = False,
+) -> list:
+    """
+    Process a Fortran-style THETA event folder.
+
+    The folder should contain:
+    - Epicenter.parameters
+    - records
+    - station files listed in records, each containing waveform and GeoRom response
+    """
+    folder = os.path.abspath(folder)
+    epicenter_path = os.path.join(folder, "Epicenter.parameters")
+    records_path = os.path.join(folder, "records")
+
+    if output is None:
+        output = os.path.join(folder, "theta_python_results.csv")
+    if compare_file is None:
+        default_compare = os.path.join(folder, "results.en")
+        compare_file = default_compare if os.path.exists(default_compare) else None
+
+    epicenter = read_epicenter_parameters(epicenter_path)
+    origin_s = seconds_of_day(
+        epicenter.get("hour", 0),
+        epicenter.get("minute", 0),
+        epicenter.get("second", 0.0),
+    )
+    depth = epicenter.get("depth", 33.0)
+    window_duration = compute_time_window(depth, moment)
+    jb_tables = JBTables()
+    fortran_results = read_fortran_theta_results(compare_file)
+
+    with open(records_path, "r") as f:
+        record_files = [line.strip() for line in f if line.strip()]
+
+    rows = []
+    print(f"Processing folder: {folder}")
+    print(f"Event: lat={epicenter['lat']}, lon={epicenter['lon']}, depth={depth} km")
+    print(f"M0={moment:.3e} dyn cm, mechanism=({strike}, {dip}, {rake})")
+    print(f"Records: {len(record_files)}")
+
+    for record_file in record_files:
+        path = os.path.join(folder, record_file)
+        try:
+            data, meta = read_sac_format_data(path)
+            instrument = read_georom_format(path)
+            sta_lat, sta_lon = read_station_coordinates_from_georom(path)
+
+            distance, azimuth, _, _ = great_circle(
+                epicenter["lat"], epicenter["lon"], sta_lat, sta_lon
+            )
+            travel_time = jb_tables.get_travel_time(distance, depth)
+            record_start_s = seconds_of_day(
+                meta.get("hour", 0), meta.get("minute", 0), meta.get("second", 0.0)
+            )
+            window_start_s = origin_s + travel_time - 10.0
+            nxbeg = int((window_start_s - record_start_s) / meta["dt"] + 1.5) - 1
+            nxwin = int(window_duration / meta["dt"]) + 1
+            nxend = nxbeg + nxwin
+
+            if nxbeg < 0 or nxend > len(data):
+                raise ValueError(
+                    f"P-window outside record: nxbeg={nxbeg}, nxend={nxend}, n={len(data)}"
+                )
+
+            window = data[nxbeg:nxend]
+
+            calc = lambda: compute_seismic_energy(
+                data=window,
+                dt=meta["dt"],
+                instrument=instrument,
+                elat=epicenter["lat"],
+                elon=epicenter["lon"],
+                slat=sta_lat,
+                slon=sta_lon,
+                depth_km=depth,
+                moment=moment,
+                strike=strike,
+                dip=dip,
+                rake=rake,
+                station_code=meta["station"],
+                jb_tables=jb_tables,
+            )
+            if verbose:
+                result = calc()
+            else:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = calc()
+
+            row = {
+                "station": result.station,
+                "record_file": record_file,
+                "distance_deg": result.distance_deg,
+                "azimuth": result.azimuth,
+                "ray_parameter_s_deg": result.slowness_deg,
+                "ray_parameter_s_km": result.slowness_km,
+                "theta_estimated": result.theta_estimated,
+                "theta_true": result.theta_true_mech,
+                "energy_estimated_ergs": result.energy_estimated,
+                "energy_true_ergs": result.energy_true_mech,
+                "depth_bin": result.depth_bin,
+                "status": "ok",
+                "error": "",
+            }
+
+            comparison = fortran_results.get(result.station)
+            if comparison:
+                row.update(comparison)
+                row["theta_estimated_residual"] = (
+                    row["theta_estimated"] - comparison["fortran_theta_estimated"]
+                )
+                row["theta_true_residual"] = (
+                    row["theta_true"] - comparison["fortran_theta_true"]
+                )
+
+            rows.append(row)
+            print(f"  {result.station}: theta={result.theta_estimated:.2f}")
+
+        except Exception as exc:
+            station = os.path.basename(record_file)
+            rows.append({
+                "station": station,
+                "record_file": record_file,
+                "status": "error",
+                "error": str(exc),
+            })
+            print(f"  {station}: ERROR {exc}")
+
+    fieldnames = [
+        "station", "record_file", "distance_deg", "azimuth",
+        "ray_parameter_s_deg", "ray_parameter_s_km",
+        "theta_estimated", "theta_true",
+        "energy_estimated_ergs", "energy_true_ergs",
+        "depth_bin", "status", "error",
+        "fortran_distance_deg", "fortran_azimuth",
+        "fortran_theta_estimated", "fortran_theta_true", "fortran_moment",
+        "theta_estimated_residual", "theta_true_residual",
+    ]
+    with open(output, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    ok_rows = [row for row in rows if row.get("status") == "ok"]
+    print(f"\nWrote: {output}")
+    print(f"Successful stations: {len(ok_rows)} / {len(rows)}")
+    if ok_rows:
+        theta = np.array([row["theta_estimated"] for row in ok_rows])
+        print(f"Mean estimated theta: {np.mean(theta):.2f} +/- {np.std(theta):.2f}")
+        residuals = [
+            row["theta_estimated_residual"]
+            for row in ok_rows
+            if "theta_estimated_residual" in row
+        ]
+        if residuals:
+            residuals = np.array(residuals)
+            print(f"Mean Python-Fortran residual: {np.mean(residuals):+.2f}")
+            print(f"Median absolute residual:     {np.median(np.abs(residuals)):.2f}")
+
+    return rows
+
+
+def download_event(args) -> None:
+    """Download MiniSEED and StationXML for one manually specified event."""
+    try:
+        from iris_downloader import CMTEvent, download_event_data
+    except ImportError as exc:
+        raise SystemExit(
+            "download-event requires ObsPy and iris_downloader dependencies. "
+            "Try running inside your seismo_env conda environment."
+        ) from exc
+
+    from datetime import datetime
+
+    event = CMTEvent(
+        event_id=args.event_id,
+        origin_time=datetime.fromisoformat(args.origin_time.replace("Z", "+00:00")),
+        latitude=args.latitude,
+        longitude=args.longitude,
+        depth_km=args.depth,
+        magnitude=args.magnitude,
+        moment=args.moment,
+        strike=args.strike,
+        dip=args.dip,
+        rake=args.rake,
+    )
+
+    files = download_event_data(
+        event=event,
+        output_dir=args.output_dir,
+        networks=args.networks,
+        channel=args.channel,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
+        pre_origin=args.pre_origin,
+        post_origin=args.post_origin,
+        client_name=args.client,
+    )
+    print(f"\nDownloaded {len(files)} waveform files.")
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -297,6 +552,8 @@ def main():
 Examples:
   python theta_calculator.py --demo
   python theta_calculator.py --data record.dat --response resp.dat --epicenter epi.dat
+  python theta_calculator.py run-folder ../BOL_19 --moment 4.2e25 --strike 2215 --dip 15 --rake 92
+  python theta_calculator.py download-event --event-id BOL_2019 --origin-time 2019-03-15T05:03:50.1 --latitude -17.74 --longitude -65.90 --depth 381 --magnitude 6.3 --moment 4.2e25 --strike 2215 --dip 15 --rake 92
 
 For more information, see the documentation.
         """
@@ -318,10 +575,63 @@ For more information, see the documentation.
                        help='Fault dip in degrees (default: 45)')
     parser.add_argument('--rake', type=float, default=90.0,
                        help='Fault rake in degrees (default: 90)')
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    folder_parser = subparsers.add_parser(
+        "run-folder",
+        help="Process a Fortran-style THETA event folder",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    folder_parser.add_argument("folder", help="Event folder containing Epicenter.parameters and records")
+    folder_parser.add_argument("--moment", type=float, required=True, help="Seismic moment M0 in dyn-cm")
+    folder_parser.add_argument("--strike", type=float, required=True, help="Fault strike in degrees")
+    folder_parser.add_argument("--dip", type=float, required=True, help="Fault dip in degrees")
+    folder_parser.add_argument("--rake", type=float, required=True, help="Fault rake in degrees")
+    folder_parser.add_argument("--output", help="Output CSV path")
+    folder_parser.add_argument("--compare", help="Optional Fortran results.en file for residuals")
+    folder_parser.add_argument("--verbose", action="store_true", help="Print full station diagnostics")
+
+    download_parser = subparsers.add_parser(
+        "download-event",
+        help="Download MiniSEED waveforms and StationXML responses from an FDSN service",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    download_parser.add_argument("--event-id", required=True, help="Event label for output folder")
+    download_parser.add_argument("--origin-time", required=True, help="Origin time, e.g. 2019-03-15T05:03:50.1")
+    download_parser.add_argument("--latitude", type=float, required=True, help="Event latitude")
+    download_parser.add_argument("--longitude", type=float, required=True, help="Event longitude")
+    download_parser.add_argument("--depth", type=float, required=True, help="Event depth in km")
+    download_parser.add_argument("--magnitude", type=float, default=0.0, help="Event magnitude")
+    download_parser.add_argument("--moment", type=float, required=True, help="Seismic moment M0 in dyn-cm")
+    download_parser.add_argument("--strike", type=float, required=True, help="Fault strike in degrees")
+    download_parser.add_argument("--dip", type=float, required=True, help="Fault dip in degrees")
+    download_parser.add_argument("--rake", type=float, required=True, help="Fault rake in degrees")
+    download_parser.add_argument("--output-dir", default="theta_results", help="Directory for downloaded data")
+    download_parser.add_argument("--networks", default="II,IU", help="Comma-separated network codes")
+    download_parser.add_argument("--channel", default="BHZ", help="Channel code")
+    download_parser.add_argument("--min-distance", type=float, default=30.0, help="Minimum station distance in degrees")
+    download_parser.add_argument("--max-distance", type=float, default=80.0, help="Maximum station distance in degrees")
+    download_parser.add_argument("--pre-origin", type=float, default=60.0, help="Seconds before origin to download")
+    download_parser.add_argument("--post-origin", type=float, default=1800.0, help="Seconds after origin to download")
+    download_parser.add_argument("--client", default="IRIS", help="ObsPy FDSN client name")
     
     args = parser.parse_args()
     
-    if args.demo:
+    if args.command == "run-folder":
+        run_event_folder(
+            folder=args.folder,
+            moment=args.moment,
+            strike=args.strike,
+            dip=args.dip,
+            rake=args.rake,
+            output=args.output,
+            compare_file=args.compare,
+            verbose=args.verbose,
+        )
+    elif args.command == "download-event":
+        download_event(args)
+    elif args.demo:
         run_demo()
     elif args.data and args.response and args.epicenter:
         process_data(
