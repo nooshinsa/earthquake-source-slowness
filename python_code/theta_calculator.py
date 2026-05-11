@@ -552,8 +552,8 @@ def main():
 Examples:
   python theta_calculator.py --demo
   python theta_calculator.py --data record.dat --response resp.dat --epicenter epi.dat
-  python theta_calculator.py run-folder ../BOL_19 --moment 4.2e25 --strike 2215 --dip 15 --rake 92
-  python theta_calculator.py download-event --event-id BOL_2019 --origin-time 2019-03-15T05:03:50.1 --latitude -17.74 --longitude -65.90 --depth 381 --magnitude 6.3 --moment 4.2e25 --strike 2215 --dip 15 --rake 92
+  python theta_calculator.py run-folder ../BOL_19 --moment 4.2e25 --strike 55 --dip 15 --rake 92
+  python theta_calculator.py download-event --event-id BOL_2019 --origin-time 2019-03-15T05:03:50.1 --latitude -17.74 --longitude -65.90 --depth 381 --magnitude 6.3 --moment 4.2e25 --strike 55 --dip 15 --rake 92
 
 For more information, see the documentation.
         """
