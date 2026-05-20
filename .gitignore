@@ -23,6 +23,8 @@ RESP.*
 *.sacpz
 python_code/theta_results/
 python_code/test_*/results.txt
+downloads*/
+bulk_results*/
 resp
 
 # Runtime/debug outputs

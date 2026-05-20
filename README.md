@@ -179,6 +179,53 @@ excludes them from the reported event mean. The station rows are still kept in
 the output table for inspection. This downloaded-data calculation path is newer
 than the Fortran-style `run-folder` workflow and should be validated carefully.
 
+## Bulk Catalog Workflow
+
+For many events, first convert an ObsPy-readable catalog, such as a Global CMT
+NDK file, to the CSV format used by this package:
+
+```bash
+python3 python_code/theta_calculator.py make-catalog globalcmt.ndk \
+  --output catalog.csv \
+  --min-magnitude 6.0 \
+  --min-depth 300 \
+  --max-depth 700
+```
+
+The generated CSV contains:
+
+```text
+event_id,origin_time,latitude,longitude,depth_km,magnitude,moment,strike,dip,rake
+```
+
+Then download waveforms/responses and calculate Theta for every event:
+
+```bash
+python3 python_code/theta_calculator.py process-catalog catalog.csv \
+  --output-dir bulk_results \
+  --networks II,IU \
+  --channel BHZ \
+  --min-distance 35 \
+  --max-distance 80 \
+  --remove-outliers
+```
+
+This creates one folder per event and writes a master summary:
+
+```text
+bulk_results/
+  EVENT_ID/
+    event_info.txt
+    *.mseed
+    *.xml
+    *.meta
+    theta_downloaded_results.csv
+  theta_summary.csv
+```
+
+If the event folders are already downloaded, add `--no-download` to reprocess
+them without requesting data again.
+
 ## Validation Status
 
 The Python calculation has been compared with a local Fortran BOL_19 result set.

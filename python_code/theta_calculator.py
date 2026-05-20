@@ -26,7 +26,7 @@ import os
 import numpy as np
 import sys
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List
 
 # Import our modules
 from seismic_utils import great_circle, find_fft_size, seconds_to_hms
@@ -39,6 +39,12 @@ from energy_calculation import (
 from depth_bins import print_depth_bin_info, DEPTH_BIN_SUMMARY
 from depth_bins import compute_time_window
 from instrument_response import read_georom_format
+
+
+CATALOG_FIELDS = [
+    "event_id", "origin_time", "latitude", "longitude", "depth_km",
+    "magnitude", "moment", "strike", "dip", "rake",
+]
 
 
 def print_banner():
@@ -778,6 +784,265 @@ def read_station_meta(meta_path: str) -> dict:
     return meta
 
 
+def magnitude_to_moment(magnitude: float) -> float:
+    """Convert moment magnitude Mw to scalar moment in dyn-cm."""
+    return 10 ** (1.5 * magnitude + 16.1)
+
+
+def scalar_moment_to_dyn_cm(value: Optional[float]) -> Optional[float]:
+    """Return scalar moment in dyn-cm, accepting likely N-m or dyn-cm values."""
+    if value is None:
+        return None
+    moment = float(value)
+    # ObsPy event scalar moments are normally N-m. THETA uses dyn-cm.
+    if abs(moment) < 1.0e24:
+        moment *= 1.0e7
+    return moment
+
+
+def sanitize_event_id(value: str) -> str:
+    """Make an event id safe for folder names."""
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in value)
+    return safe.strip("_") or "event"
+
+
+def get_public_id(resource_id) -> str:
+    """Extract a compact id from an ObsPy resource id."""
+    if not resource_id:
+        return "event"
+    text = str(resource_id)
+    return sanitize_event_id(text.rstrip("/").split("/")[-1])
+
+
+def event_to_catalog_row(event, index: int) -> Optional[Dict[str, object]]:
+    """Convert an ObsPy Event to the CSV row used by THETA bulk processing."""
+    origin = event.preferred_origin() or (event.origins[0] if event.origins else None)
+    if origin is None:
+        return None
+
+    magnitude_obj = event.preferred_magnitude() or (
+        event.magnitudes[0] if event.magnitudes else None
+    )
+    magnitude = float(magnitude_obj.mag) if magnitude_obj and magnitude_obj.mag is not None else np.nan
+
+    focal_mechanism = event.preferred_focal_mechanism() or (
+        event.focal_mechanisms[0] if event.focal_mechanisms else None
+    )
+    strike = dip = rake = np.nan
+    scalar_moment = None
+    if focal_mechanism is not None:
+        nodal_planes = getattr(focal_mechanism, "nodal_planes", None)
+        plane = getattr(nodal_planes, "nodal_plane_1", None) if nodal_planes else None
+        if plane is not None:
+            strike = float(plane.strike)
+            dip = float(plane.dip)
+            rake = float(plane.rake)
+
+        moment_tensor = getattr(focal_mechanism, "moment_tensor", None)
+        scalar_moment = getattr(moment_tensor, "scalar_moment", None) if moment_tensor else None
+
+    moment = scalar_moment_to_dyn_cm(scalar_moment)
+    if moment is None and not np.isnan(magnitude):
+        moment = magnitude_to_moment(magnitude)
+
+    if moment is None or np.isnan(strike) or np.isnan(dip) or np.isnan(rake):
+        return None
+
+    event_id = get_public_id(event.resource_id)
+    if event_id == "event":
+        event_id = f"event_{index:04d}"
+
+    return {
+        "event_id": event_id,
+        "origin_time": origin.time.datetime.isoformat(),
+        "latitude": float(origin.latitude),
+        "longitude": float(origin.longitude),
+        "depth_km": float(origin.depth) / 1000.0,
+        "magnitude": magnitude,
+        "moment": moment,
+        "strike": strike,
+        "dip": dip,
+        "rake": rake,
+    }
+
+
+def make_catalog(args) -> None:
+    """Convert an ObsPy-readable event catalog to THETA CSV."""
+    try:
+        from obspy import read_events
+    except ImportError as exc:
+        raise SystemExit(
+            "make-catalog requires ObsPy. Try running inside your seismo_env "
+            "conda environment."
+        ) from exc
+
+    catalog = read_events(args.input)
+    rows = []
+    skipped = 0
+    for index, event in enumerate(catalog, start=1):
+        row = event_to_catalog_row(event, index)
+        if row is None:
+            skipped += 1
+            continue
+        if row["magnitude"] < args.min_magnitude or row["magnitude"] > args.max_magnitude:
+            continue
+        if row["depth_km"] < args.min_depth or row["depth_km"] > args.max_depth:
+            continue
+        rows.append(row)
+
+    with open(args.output, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CATALOG_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Read events: {len(catalog)}")
+    print(f"Wrote events: {len(rows)}")
+    if skipped:
+        print(f"Skipped incomplete events: {skipped}")
+    print(f"Catalog CSV: {args.output}")
+
+
+def get_first(row: Dict[str, str], names: List[str], required: bool = True) -> str:
+    """Get first non-empty CSV field from a list of possible names."""
+    lowered = {key.lower(): value for key, value in row.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value not in (None, ""):
+            return value
+    if required:
+        raise ValueError(f"Missing required catalog column; tried: {', '.join(names)}")
+    return ""
+
+
+def catalog_row_to_event(row: Dict[str, str], index: int) -> Dict[str, object]:
+    """Parse one catalog CSV row into event parameters."""
+    magnitude_text = get_first(row, ["magnitude", "mw", "mag"], required=False)
+    magnitude = float(magnitude_text) if magnitude_text else 0.0
+    moment_text = get_first(row, ["moment", "m0", "scalar_moment"], required=False)
+    moment = float(moment_text) if moment_text else magnitude_to_moment(magnitude)
+
+    event_id = get_first(row, ["event_id", "id", "name"], required=False)
+    if not event_id:
+        event_id = f"event_{index:04d}"
+
+    return {
+        "event_id": sanitize_event_id(event_id),
+        "origin_time": get_first(row, ["origin_time", "datetime", "time"]),
+        "latitude": float(get_first(row, ["latitude", "lat"])),
+        "longitude": float(get_first(row, ["longitude", "lon", "long"])),
+        "depth_km": float(get_first(row, ["depth_km", "depth"])),
+        "magnitude": magnitude,
+        "moment": moment,
+        "strike": float(get_first(row, ["strike"])),
+        "dip": float(get_first(row, ["dip"])),
+        "rake": float(get_first(row, ["rake", "slip"])),
+    }
+
+
+def summarize_theta_rows(rows: List[dict]) -> Dict[str, object]:
+    """Compute event summary from station rows."""
+    used = [row for row in rows if row.get("used_in_mean")]
+    theta = np.array([row["theta_estimated"] for row in used], dtype=float)
+    if len(theta) == 0:
+        return {
+            "n_stations": len(rows),
+            "n_used": 0,
+            "n_outliers": len(rows),
+            "theta_mean": np.nan,
+            "theta_std": np.nan,
+            "classification": "NO DATA",
+        }
+    return {
+        "n_stations": len(rows),
+        "n_used": len(used),
+        "n_outliers": len(rows) - len(used),
+        "theta_mean": float(np.mean(theta)),
+        "theta_std": float(np.std(theta)),
+        "classification": classify_event(float(np.mean(theta))),
+    }
+
+
+def process_catalog(args) -> None:
+    """Download and process a CSV catalog of events."""
+    os.makedirs(args.output_dir, exist_ok=True)
+    summary_rows = []
+
+    with open(args.catalog, "r", newline="") as f:
+        events = [catalog_row_to_event(row, i) for i, row in enumerate(csv.DictReader(f), start=1)]
+
+    if args.limit:
+        events = events[:args.limit]
+
+    for i, event in enumerate(events, start=1):
+        print(f"\nEvent {i}/{len(events)}: {event['event_id']}")
+        status = "ok"
+        error = ""
+        rows = []
+        event_dir = os.path.join(args.output_dir, event["event_id"])
+        try:
+            if not args.no_download:
+                download_args = argparse.Namespace(
+                    event_id=event["event_id"],
+                    origin_time=event["origin_time"],
+                    latitude=event["latitude"],
+                    longitude=event["longitude"],
+                    depth=event["depth_km"],
+                    magnitude=event["magnitude"],
+                    moment=event["moment"],
+                    strike=event["strike"],
+                    dip=event["dip"],
+                    rake=event["rake"],
+                    output_dir=args.output_dir,
+                    networks=args.networks,
+                    channel=args.channel,
+                    min_distance=args.min_distance,
+                    max_distance=args.max_distance,
+                    pre_origin=args.pre_origin,
+                    post_origin=args.post_origin,
+                    client=args.client,
+                )
+                download_event(download_args)
+
+            if not os.path.exists(event_dir):
+                raise ValueError(f"Downloaded event folder not found: {event_dir}")
+
+            process_args = argparse.Namespace(
+                folder=event_dir,
+                output=None,
+                min_distance=args.min_distance,
+                max_distance=args.max_distance,
+                remove_outliers=args.remove_outliers,
+                outlier_threshold=args.outlier_threshold,
+                verbose=args.verbose,
+            )
+            rows = process_downloaded_folder(process_args)
+            event_summary = summarize_theta_rows(rows)
+        except Exception as exc:
+            status = "error"
+            error = str(exc)
+            event_summary = summarize_theta_rows([])
+            print(f"  Error: {error}")
+
+        summary_rows.append({
+            **event,
+            **event_summary,
+            "status": status,
+            "error": error,
+        })
+
+    summary_path = os.path.join(args.output_dir, "theta_summary.csv")
+    fieldnames = [
+        *CATALOG_FIELDS, "n_stations", "n_used", "n_outliers",
+        "theta_mean", "theta_std", "classification", "status", "error",
+    ]
+    with open(summary_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+    print(f"\nBulk summary written to: {summary_path}")
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -790,6 +1055,8 @@ Examples:
   python theta_calculator.py run-folder ../BOL_19 --moment 4.2e25 --strike 55 --dip 15 --rake 92
   python theta_calculator.py download-event --event-id BOL_2019 --origin-time 2019-03-15T05:03:50.1 --latitude -17.74 --longitude -65.90 --depth 381 --magnitude 6.3 --moment 4.2e25 --strike 55 --dip 15 --rake 92
   python theta_calculator.py process-downloaded downloads_test/BOL_2019 --remove-outliers
+  python theta_calculator.py make-catalog globalcmt.ndk --output catalog.csv
+  python theta_calculator.py process-catalog catalog.csv --output-dir bulk_results --remove-outliers
 
 For more information, see the documentation.
         """
@@ -864,6 +1131,38 @@ For more information, see the documentation.
     downloaded_parser.add_argument("--remove-outliers", action="store_true", help="Exclude robust Theta outliers from the reported mean")
     downloaded_parser.add_argument("--outlier-threshold", type=float, default=3.5, help="Modified-z-score cutoff for outlier removal")
     downloaded_parser.add_argument("--verbose", action="store_true", help="Print full station diagnostics")
+
+    catalog_parser = subparsers.add_parser(
+        "make-catalog",
+        help="Convert an ObsPy-readable event catalog, such as Global CMT NDK, to THETA CSV",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    catalog_parser.add_argument("input", help="Input catalog file readable by ObsPy")
+    catalog_parser.add_argument("--output", required=True, help="Output CSV path")
+    catalog_parser.add_argument("--min-magnitude", type=float, default=0.0, help="Minimum magnitude")
+    catalog_parser.add_argument("--max-magnitude", type=float, default=10.0, help="Maximum magnitude")
+    catalog_parser.add_argument("--min-depth", type=float, default=0.0, help="Minimum depth in km")
+    catalog_parser.add_argument("--max-depth", type=float, default=700.0, help="Maximum depth in km")
+
+    bulk_parser = subparsers.add_parser(
+        "process-catalog",
+        help="Download and process every event in a THETA catalog CSV",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    bulk_parser.add_argument("catalog", help="Catalog CSV with event_id, origin_time, latitude, longitude, depth_km, moment, strike, dip, rake")
+    bulk_parser.add_argument("--output-dir", required=True, help="Directory for event folders and summary CSV")
+    bulk_parser.add_argument("--networks", default="II,IU", help="Comma-separated network codes")
+    bulk_parser.add_argument("--channel", default="BHZ", help="Channel code")
+    bulk_parser.add_argument("--min-distance", type=float, default=35.0, help="Minimum station distance in degrees")
+    bulk_parser.add_argument("--max-distance", type=float, default=80.0, help="Maximum station distance in degrees")
+    bulk_parser.add_argument("--pre-origin", type=float, default=60.0, help="Seconds before origin to download")
+    bulk_parser.add_argument("--post-origin", type=float, default=1800.0, help="Seconds after origin to download")
+    bulk_parser.add_argument("--client", default="IRIS", help="ObsPy FDSN client name")
+    bulk_parser.add_argument("--remove-outliers", action="store_true", help="Exclude robust Theta outliers from event means")
+    bulk_parser.add_argument("--outlier-threshold", type=float, default=3.5, help="Modified-z-score cutoff for outlier removal")
+    bulk_parser.add_argument("--no-download", action="store_true", help="Process already downloaded event folders")
+    bulk_parser.add_argument("--limit", type=int, help="Process only the first N events")
+    bulk_parser.add_argument("--verbose", action="store_true", help="Print full station diagnostics")
     
     args = parser.parse_args()
     
@@ -882,6 +1181,10 @@ For more information, see the documentation.
         download_event(args)
     elif args.command == "process-downloaded":
         process_downloaded_folder(args)
+    elif args.command == "make-catalog":
+        make_catalog(args)
+    elif args.command == "process-catalog":
+        process_catalog(args)
     elif args.demo:
         run_demo()
     elif args.data and args.response and args.epicenter:
