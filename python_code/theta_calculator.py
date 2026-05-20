@@ -602,7 +602,7 @@ def robust_outlier_mask(values: np.ndarray, threshold: float = 3.5) -> np.ndarra
 def process_downloaded_folder(args) -> list:
     """Process a downloaded MiniSEED/StationXML event folder."""
     try:
-        from iris_downloader import CMTEvent, process_downloaded_event
+        from obspy import UTCDateTime, read, read_inventory
     except ImportError as exc:
         raise SystemExit(
             "process-downloaded requires ObsPy. Try running inside "
@@ -612,33 +612,103 @@ def process_downloaded_folder(args) -> list:
     event_dir = os.path.abspath(args.folder)
     info = read_downloaded_event_info(event_dir)
 
-    event = CMTEvent(
-        event_id=info.get("event_id", os.path.basename(event_dir)),
-        origin_time=parse_origin_time(info["origin_time"]),
-        latitude=float(info["latitude"]),
-        longitude=float(info["longitude"]),
-        depth_km=float(info["depth_km"]),
-        magnitude=float(info.get("magnitude", 0.0)),
-        moment=float(info["moment"]),
-        strike=float(info["strike"]),
-        dip=float(info["dip"]),
-        rake=float(info["rake"]),
+    origin_time = parse_origin_time(info["origin_time"])
+    event_lat = float(info["latitude"])
+    event_lon = float(info["longitude"])
+    depth_km = float(info["depth_km"])
+    moment = float(info["moment"])
+    strike = float(info["strike"])
+    dip = float(info["dip"])
+    rake = float(info["rake"])
+
+    jb_tables = JBTables()
+    window_duration = compute_time_window(depth_km, moment)
+    origin_utc = UTCDateTime(origin_time)
+    station_results = []
+
+    mseed_files = sorted(
+        name for name in os.listdir(event_dir) if name.endswith(".mseed")
     )
 
-    if args.verbose:
-        result = process_downloaded_event(event_dir, event)
-    else:
-        with contextlib.redirect_stdout(io.StringIO()):
-            result = process_downloaded_event(event_dir, event)
+    for mseed_file in mseed_files:
+        station_code = mseed_file.replace(".mseed", "").rsplit(".", 1)[0]
+        try:
+            meta = read_station_meta(
+                os.path.join(event_dir, mseed_file.replace(".mseed", ".meta"))
+            )
+            station_lat = meta["station_lat"]
+            station_lon = meta["station_lon"]
 
-    rows = []
-    for station_result in result["results"]:
-        in_distance_range = (
-            args.min_distance <= station_result.distance_deg <= args.max_distance
-        )
-        if not in_distance_range:
+            distance, _, _, _ = great_circle(
+                event_lat, event_lon, station_lat, station_lon
+            )
+            if not (args.min_distance <= distance <= args.max_distance):
+                continue
+
+            travel_time = jb_tables.get_travel_time(distance, depth_km)
+            window_start = origin_utc + travel_time - 10.0
+            window_end = window_start + window_duration
+
+            st = read(os.path.join(event_dir, mseed_file))
+            xml_file = os.path.join(event_dir, mseed_file.replace(".mseed", ".xml"))
+            if os.path.exists(xml_file):
+                inventory = read_inventory(xml_file)
+                st = st.copy()
+                st.trim(window_start - 30.0, window_end + 30.0)
+                st.remove_response(
+                    inventory=inventory,
+                    output="VEL",
+                    pre_filt=(0.02, 0.05, 2.0, 4.0),
+                    water_level=60,
+                )
+            else:
+                st = st.copy()
+
+            st.trim(window_start, window_end)
+            if not st or len(st[0].data) == 0:
+                raise ValueError("P-window outside downloaded waveform")
+
+            trace = st[0]
+            data = trace.data.astype(float)
+            dt = trace.stats.delta
+
+            # After StationXML response removal, data are velocity in m/s.
+            instrument = InstrumentResponse(
+                a0=1.0,
+                sensitivity=1.0,
+                zeros=np.array([]),
+                poles=np.array([]),
+                unit="M/S",
+            )
+
+            calc = lambda: compute_seismic_energy(
+                data=data,
+                dt=dt,
+                instrument=instrument,
+                elat=event_lat,
+                elon=event_lon,
+                slat=station_lat,
+                slon=station_lon,
+                depth_km=depth_km,
+                moment=moment,
+                strike=strike,
+                dip=dip,
+                rake=rake,
+                station_code=station_code,
+                jb_tables=jb_tables,
+            )
+            if args.verbose:
+                station_results.append(calc())
+            else:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    station_results.append(calc())
+        except Exception as exc:
+            if args.verbose:
+                print(f"  {station_code}: {exc}")
             continue
 
+    rows = []
+    for station_result in station_results:
         rows.append({
             "station": station_result.station,
             "distance_deg": station_result.distance_deg,
@@ -692,6 +762,20 @@ def process_downloaded_folder(args) -> list:
         print("No stations available for mean theta.")
 
     return rows
+
+
+def read_station_meta(meta_path: str) -> dict:
+    """Read station metadata written by download-event."""
+    if not os.path.exists(meta_path):
+        raise ValueError(f"Missing station metadata file: {meta_path}")
+
+    meta = {}
+    with open(meta_path, "r") as f:
+        for line in f:
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                meta[key] = float(value)
+    return meta
 
 
 def main():
