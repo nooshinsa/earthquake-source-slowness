@@ -25,6 +25,7 @@ import io
 import os
 import numpy as np
 import sys
+from datetime import datetime
 from typing import Optional
 
 # Import our modules
@@ -514,11 +515,9 @@ def download_event(args) -> None:
             "Try running inside your seismo_env conda environment."
         ) from exc
 
-    from datetime import datetime
-
     event = CMTEvent(
         event_id=args.event_id,
-        origin_time=datetime.fromisoformat(args.origin_time.replace("Z", "+00:00")),
+        origin_time=parse_origin_time(args.origin_time),
         latitude=args.latitude,
         longitude=args.longitude,
         depth_km=args.depth,
@@ -541,6 +540,34 @@ def download_event(args) -> None:
         client_name=args.client,
     )
     print(f"\nDownloaded {len(files)} waveform files.")
+
+
+def parse_origin_time(value: str) -> datetime:
+    """Parse common catalog origin-time strings."""
+    text = value.strip()
+    normalized = text[:-1] if text.endswith("Z") else text
+
+    for candidate in (normalized, normalized.replace("T", " ")):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            pass
+
+    raise SystemExit(
+        f"Invalid --origin-time '{value}'. Use a format like "
+        "2019-03-15T05:03:50.1 or 2019-03-15T05:03:50."
+    )
 
 
 def main():
