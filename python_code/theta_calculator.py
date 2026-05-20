@@ -570,6 +570,130 @@ def parse_origin_time(value: str) -> datetime:
     )
 
 
+def read_downloaded_event_info(event_dir: str) -> dict:
+    """Read event_info.txt written by download-event."""
+    event_file = os.path.join(event_dir, "event_info.txt")
+    if not os.path.exists(event_file):
+        raise SystemExit(f"Missing event info file: {event_file}")
+
+    info = {}
+    with open(event_file, "r") as f:
+        for line in f:
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                info[key] = value
+    return info
+
+
+def robust_outlier_mask(values: np.ndarray, threshold: float = 3.5) -> np.ndarray:
+    """Return True for values kept by a modified-z-score outlier test."""
+    if len(values) == 0:
+        return np.array([], dtype=bool)
+
+    median = np.median(values)
+    mad = np.median(np.abs(values - median))
+    if mad == 0:
+        return np.ones(len(values), dtype=bool)
+
+    modified_z = 0.6745 * (values - median) / mad
+    return np.abs(modified_z) <= threshold
+
+
+def process_downloaded_folder(args) -> list:
+    """Process a downloaded MiniSEED/StationXML event folder."""
+    try:
+        from iris_downloader import CMTEvent, process_downloaded_event
+    except ImportError as exc:
+        raise SystemExit(
+            "process-downloaded requires ObsPy. Try running inside "
+            "your seismo_env conda environment."
+        ) from exc
+
+    event_dir = os.path.abspath(args.folder)
+    info = read_downloaded_event_info(event_dir)
+
+    event = CMTEvent(
+        event_id=info.get("event_id", os.path.basename(event_dir)),
+        origin_time=parse_origin_time(info["origin_time"]),
+        latitude=float(info["latitude"]),
+        longitude=float(info["longitude"]),
+        depth_km=float(info["depth_km"]),
+        magnitude=float(info.get("magnitude", 0.0)),
+        moment=float(info["moment"]),
+        strike=float(info["strike"]),
+        dip=float(info["dip"]),
+        rake=float(info["rake"]),
+    )
+
+    if args.verbose:
+        result = process_downloaded_event(event_dir, event)
+    else:
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = process_downloaded_event(event_dir, event)
+
+    rows = []
+    for station_result in result["results"]:
+        in_distance_range = (
+            args.min_distance <= station_result.distance_deg <= args.max_distance
+        )
+        if not in_distance_range:
+            continue
+
+        rows.append({
+            "station": station_result.station,
+            "distance_deg": station_result.distance_deg,
+            "azimuth_deg": station_result.azimuth,
+            "ray_parameter_s_deg": station_result.slowness_deg,
+            "ray_parameter_s_km": station_result.slowness_km,
+            "theta_estimated": station_result.theta_estimated,
+            "theta_true_mech": station_result.theta_true_mech,
+            "energy_estimated_ergs": station_result.energy_estimated,
+            "energy_true_mech_ergs": station_result.energy_true_mech,
+            "outlier": False,
+            "used_in_mean": True,
+        })
+
+    if args.remove_outliers and rows:
+        values = np.array([row["theta_estimated"] for row in rows])
+        keep_mask = robust_outlier_mask(values, args.outlier_threshold)
+        for row, keep in zip(rows, keep_mask):
+            row["outlier"] = not bool(keep)
+            row["used_in_mean"] = bool(keep)
+
+    if args.output:
+        output = args.output
+    else:
+        output = os.path.join(event_dir, "theta_downloaded_results.csv")
+
+    fieldnames = [
+        "station", "distance_deg", "azimuth_deg",
+        "ray_parameter_s_deg", "ray_parameter_s_km",
+        "theta_estimated", "theta_true_mech",
+        "energy_estimated_ergs", "energy_true_mech_ergs",
+        "outlier", "used_in_mean",
+    ]
+    with open(output, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    used = [row for row in rows if row["used_in_mean"]]
+    print(f"Processed downloaded folder: {event_dir}")
+    print(f"Distance range: {args.min_distance:.1f}-{args.max_distance:.1f} degrees")
+    print(f"Wrote: {output}")
+    print(f"Stations in distance range: {len(rows)}")
+    if args.remove_outliers:
+        print(f"Outliers removed from mean: {len(rows) - len(used)}")
+    if used:
+        theta = np.array([row["theta_estimated"] for row in used])
+        print(f"Mean estimated theta: {np.mean(theta):.2f} +/- {np.std(theta):.2f}")
+        print(f"Classification: {classify_event(float(np.mean(theta)))}")
+    else:
+        print("No stations available for mean theta.")
+
+    return rows
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -581,6 +705,7 @@ Examples:
   python theta_calculator.py --data record.dat --response resp.dat --epicenter epi.dat
   python theta_calculator.py run-folder ../BOL_19 --moment 4.2e25 --strike 55 --dip 15 --rake 92
   python theta_calculator.py download-event --event-id BOL_2019 --origin-time 2019-03-15T05:03:50.1 --latitude -17.74 --longitude -65.90 --depth 381 --magnitude 6.3 --moment 4.2e25 --strike 55 --dip 15 --rake 92
+  python theta_calculator.py process-downloaded downloads_test/BOL_2019 --remove-outliers
 
 For more information, see the documentation.
         """
@@ -637,11 +762,24 @@ For more information, see the documentation.
     download_parser.add_argument("--output-dir", default="theta_results", help="Directory for downloaded data")
     download_parser.add_argument("--networks", default="II,IU", help="Comma-separated network codes")
     download_parser.add_argument("--channel", default="BHZ", help="Channel code")
-    download_parser.add_argument("--min-distance", type=float, default=30.0, help="Minimum station distance in degrees")
+    download_parser.add_argument("--min-distance", type=float, default=35.0, help="Minimum station distance in degrees")
     download_parser.add_argument("--max-distance", type=float, default=80.0, help="Maximum station distance in degrees")
     download_parser.add_argument("--pre-origin", type=float, default=60.0, help="Seconds before origin to download")
     download_parser.add_argument("--post-origin", type=float, default=1800.0, help="Seconds after origin to download")
     download_parser.add_argument("--client", default="IRIS", help="ObsPy FDSN client name")
+
+    downloaded_parser = subparsers.add_parser(
+        "process-downloaded",
+        help="Process a downloaded MiniSEED/StationXML event folder",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    downloaded_parser.add_argument("folder", help="Downloaded event folder containing event_info.txt")
+    downloaded_parser.add_argument("--output", help="Output CSV path")
+    downloaded_parser.add_argument("--min-distance", type=float, default=35.0, help="Minimum station distance in degrees")
+    downloaded_parser.add_argument("--max-distance", type=float, default=80.0, help="Maximum station distance in degrees")
+    downloaded_parser.add_argument("--remove-outliers", action="store_true", help="Exclude robust Theta outliers from the reported mean")
+    downloaded_parser.add_argument("--outlier-threshold", type=float, default=3.5, help="Modified-z-score cutoff for outlier removal")
+    downloaded_parser.add_argument("--verbose", action="store_true", help="Print full station diagnostics")
     
     args = parser.parse_args()
     
@@ -658,6 +796,8 @@ For more information, see the documentation.
         )
     elif args.command == "download-event":
         download_event(args)
+    elif args.command == "process-downloaded":
+        process_downloaded_folder(args)
     elif args.demo:
         run_demo()
     elif args.data and args.response and args.epicenter:

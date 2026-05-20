@@ -138,7 +138,7 @@ python3 python_code/theta_calculator.py download-event \
   --rake 92 \
   --networks II,IU \
   --channel BHZ \
-  --min-distance 30 \
+  --min-distance 35 \
   --max-distance 80 \
   --pre-origin 60 \
   --post-origin 1800 \
@@ -155,6 +155,29 @@ Download filters currently include:
 
 The download command collects data. The most validated calculation command is
 still `run-folder`.
+
+## Process Downloaded Data
+
+Downloaded MiniSEED/StationXML folders can be processed with:
+
+```bash
+python3 python_code/theta_calculator.py process-downloaded \
+  downloads_test/BOL_2019 \
+  --min-distance 35 \
+  --max-distance 80 \
+  --remove-outliers
+```
+
+This writes:
+
+```text
+downloads_test/BOL_2019/theta_downloaded_results.csv
+```
+
+The `--remove-outliers` option marks robust Theta outliers in the CSV and
+excludes them from the reported event mean. The station rows are still kept in
+the output table for inspection. This downloaded-data calculation path is newer
+than the Fortran-style `run-folder` workflow and should be validated carefully.
 
 ## Validation Status
 
