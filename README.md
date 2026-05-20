@@ -1,13 +1,13 @@
-# THETA Python
+# Earthquake Source Slowness (THETA) Python
 
-Python implementation of the THETA seismic radiated-energy workflow originally
-used in the Fortran code.
+Python implementation for calculating earthquake source slowness through the
+THETA seismic radiated-energy workflow originally used in the Fortran code.
 
 The code computes station-by-station:
 
 - P-wave ray parameter `p`
 - radiated seismic energy `E`
-- energy-to-moment parameter `Theta = log10(E / M0)`
+- earthquake source slowness parameter `Theta = log10(E / M0)`
 
 The most validated workflow currently reads the original THETA/GeoRom-style
 event folders and writes a station-by-station CSV table.

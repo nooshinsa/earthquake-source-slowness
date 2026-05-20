@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-THETA Calculator - Seismic Energy and Ray Parameter Analysis
+Earthquake Source Slowness (THETA) Calculator
 
 Python implementation of Fortran seismological routines for computing:
 - P-wave ray parameter p
 - Seismic radiated energy E
-- Theta parameter Θ = log10(E/M0)
+- Earthquake source slowness parameter Θ = log10(E/M0)
 
 Based on the methodology of Boatwright and Choy (1986).
 
@@ -45,13 +45,13 @@ def print_banner():
     """Print program banner."""
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
-║                    THETA CALCULATOR                           ║
-║         Seismic Energy & Ray Parameter Analysis               ║
+║          EARTHQUAKE SOURCE SLOWNESS CALCULATOR                ║
+║              THETA Radiated-Energy Analysis                   ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Computes:                                                    ║
 ║    • P-wave ray parameter p                                   ║
 ║    • Radiated seismic energy E                                ║
-║    • Energy-to-moment ratio Θ = log10(E/M0)                   ║
+║    • Source slowness Θ = log10(E/M0)                          ║
 ╚═══════════════════════════════════════════════════════════════╝
 """)
 
@@ -573,7 +573,7 @@ def parse_origin_time(value: str) -> datetime:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="THETA Calculator - Seismic Energy and Ray Parameter Analysis",
+        description="Earthquake Source Slowness (THETA) Calculator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
