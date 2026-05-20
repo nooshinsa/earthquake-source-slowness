@@ -181,14 +181,25 @@ than the Fortran-style `run-folder` workflow and should be validated carefully.
 
 ## Bulk Catalog Workflow
 
-For many events, first convert an ObsPy-readable catalog, such as a Global CMT
-NDK file, to the CSV format used by this package:
+For many events, first download and combine the Global CMT NDK catalog files:
 
 ```bash
-python3 python_code/theta_calculator.py make-catalog globalcmt.ndk \
-  --output catalog.csv \
+python3 python_code/theta_calculator.py download-gcmt-catalog \
+  --output catalogs/globalcmt_1976_2025sep.ndk \
+  --end-year 2025 \
+  --end-month 9 \
+  --allow-missing
+```
+
+Then convert the NDK file to the CSV format used by this package:
+
+```bash
+python3 python_code/theta_calculator.py make-catalog catalogs/globalcmt_1976_2025sep.ndk \
+  --output catalogs/theta_catalog.csv \
+  --start-date 2000-01-01 \
+  --end-date 2025-09-30 \
   --min-magnitude 6.0 \
-  --min-depth 300 \
+  --min-depth 0 \
   --max-depth 700
 ```
 
@@ -201,7 +212,7 @@ event_id,origin_time,latitude,longitude,depth_km,magnitude,moment,strike,dip,rak
 Then download waveforms/responses and calculate Theta for every event:
 
 ```bash
-python3 python_code/theta_calculator.py process-catalog catalog.csv \
+python3 python_code/theta_calculator.py process-catalog catalogs/theta_catalog.csv \
   --output-dir bulk_results \
   --networks II,IU \
   --channel BHZ \
@@ -221,7 +232,13 @@ bulk_results/
     *.meta
     theta_downloaded_results.csv
   theta_summary.csv
+  theta_all_stations.csv
 ```
+
+`theta_summary.csv` has one row per event. `theta_all_stations.csv` has every
+station Theta value for every processed event, with the event information
+included on each row. Theta columns are written with two decimal places in the
+CSV output files.
 
 If the event folders are already downloaded, add `--no-download` to reprocess
 them without requesting data again.

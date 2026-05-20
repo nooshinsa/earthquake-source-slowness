@@ -25,6 +25,7 @@ import io
 import os
 import numpy as np
 import sys
+import urllib.request
 from datetime import datetime
 from typing import Optional, Dict, List
 
@@ -44,6 +45,12 @@ from instrument_response import read_georom_format
 CATALOG_FIELDS = [
     "event_id", "origin_time", "latitude", "longitude", "depth_km",
     "magnitude", "moment", "strike", "dip", "rake",
+]
+
+GCMT_CATALOG_BASE_URL = "https://www.ldeo.columbia.edu/~gcmt/projects/CMT/catalog"
+MONTH_ABBREVIATIONS = [
+    "jan", "feb", "mar", "apr", "may", "jun",
+    "jul", "aug", "sep", "oct", "nov", "dec",
 ]
 
 
@@ -490,7 +497,7 @@ def run_event_folder(
     with open(output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(format_csv_rows(rows))
 
     ok_rows = [row for row in rows if row.get("status") == "ok"]
     print(f"\nWrote: {output}")
@@ -546,6 +553,7 @@ def download_event(args) -> None:
         client_name=args.client,
     )
     print(f"\nDownloaded {len(files)} waveform files.")
+    return files
 
 
 def parse_origin_time(value: str) -> datetime:
@@ -603,6 +611,20 @@ def robust_outlier_mask(values: np.ndarray, threshold: float = 3.5) -> np.ndarra
 
     modified_z = 0.6745 * (values - median) / mad
     return np.abs(modified_z) <= threshold
+
+
+def format_csv_rows(rows: List[dict]) -> List[dict]:
+    """Format Theta values in output CSV rows to two decimal places."""
+    formatted = []
+    for row in rows:
+        out = {}
+        for key, value in row.items():
+            if "theta" in key and isinstance(value, (int, float, np.floating)):
+                out[key] = "nan" if np.isnan(value) else f"{value:.2f}"
+            else:
+                out[key] = value
+        formatted.append(out)
+    return formatted
 
 
 def process_downloaded_folder(args) -> list:
@@ -751,7 +773,7 @@ def process_downloaded_folder(args) -> list:
     with open(output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(format_csv_rows(rows))
 
     used = [row for row in rows if row["used_in_mean"]]
     print(f"Processed downloaded folder: {event_dir}")
@@ -782,6 +804,59 @@ def read_station_meta(meta_path: str) -> dict:
                 key, value = line.strip().split("=", 1)
                 meta[key] = float(value)
     return meta
+
+
+def download_url_text(url: str) -> str:
+    """Download a text file from a URL."""
+    with urllib.request.urlopen(url, timeout=120) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
+def download_globalcmt_catalog(args) -> None:
+    """Download and combine Global CMT NDK catalog files."""
+    if args.end_month < 1 or args.end_month > 12:
+        raise SystemExit("--end-month must be between 1 and 12")
+    if args.start_year < 1976:
+        raise SystemExit("--start-year must be 1976 or later")
+    if args.end_year < args.start_year:
+        raise SystemExit("--end-year must be greater than or equal to --start-year")
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
+
+    pieces = []
+
+    if args.start_year <= 2020:
+        base_url = f"{GCMT_CATALOG_BASE_URL}/jan76_dec20.ndk"
+        print(f"Downloading base catalog: {base_url}")
+        pieces.append(download_url_text(base_url))
+        monthly_start_year = 2021
+    else:
+        monthly_start_year = args.start_year
+
+    for year in range(monthly_start_year, args.end_year + 1):
+        first_month = 1
+        last_month = 12
+        if year == args.end_year:
+            last_month = args.end_month
+
+        for month in range(first_month, last_month + 1):
+            filename = f"{MONTH_ABBREVIATIONS[month - 1]}{str(year)[-2:]}.ndk"
+            url = f"{GCMT_CATALOG_BASE_URL}/NEW_MONTHLY/{year}/{filename}"
+            print(f"Downloading monthly catalog: {url}")
+            try:
+                pieces.append(download_url_text(url))
+            except Exception as exc:
+                if args.allow_missing:
+                    print(f"  Skipping missing/unavailable file: {filename} ({exc})")
+                    continue
+                raise
+
+    with open(args.output, "w") as f:
+        for piece in pieces:
+            f.write(piece.rstrip())
+            f.write("\n")
+
+    print(f"Combined Global CMT catalog written to: {args.output}")
 
 
 def magnitude_to_moment(magnitude: float) -> float:
@@ -879,10 +954,17 @@ def make_catalog(args) -> None:
     catalog = read_events(args.input)
     rows = []
     skipped = 0
+    start_date = parse_origin_time(args.start_date) if args.start_date else None
+    end_date = parse_origin_time(args.end_date) if args.end_date else None
     for index, event in enumerate(catalog, start=1):
         row = event_to_catalog_row(event, index)
         if row is None:
             skipped += 1
+            continue
+        origin_time = parse_origin_time(row["origin_time"])
+        if start_date and origin_time < start_date:
+            continue
+        if end_date and origin_time > end_date:
             continue
         if row["magnitude"] < args.min_magnitude or row["magnitude"] > args.max_magnitude:
             continue
@@ -966,6 +1048,7 @@ def process_catalog(args) -> None:
     """Download and process a CSV catalog of events."""
     os.makedirs(args.output_dir, exist_ok=True)
     summary_rows = []
+    station_rows = []
 
     with open(args.catalog, "r", newline="") as f:
         events = [catalog_row_to_event(row, i) for i, row in enumerate(csv.DictReader(f), start=1)]
@@ -1001,7 +1084,9 @@ def process_catalog(args) -> None:
                     post_origin=args.post_origin,
                     client=args.client,
                 )
-                download_event(download_args)
+                files = download_event(download_args)
+                if not files:
+                    raise ValueError("No waveform files downloaded")
 
             if not os.path.exists(event_dir):
                 raise ValueError(f"Downloaded event folder not found: {event_dir}")
@@ -1017,6 +1102,22 @@ def process_catalog(args) -> None:
             )
             rows = process_downloaded_folder(process_args)
             event_summary = summarize_theta_rows(rows)
+            for row in rows:
+                station_rows.append({
+                    **event,
+                    "station": row["station"],
+                    "distance_deg": row["distance_deg"],
+                    "azimuth_deg": row["azimuth_deg"],
+                    "ray_parameter_s_deg": row["ray_parameter_s_deg"],
+                    "ray_parameter_s_km": row["ray_parameter_s_km"],
+                    "theta_estimated": row["theta_estimated"],
+                    "theta_true_mech": row["theta_true_mech"],
+                    "energy_estimated_ergs": row["energy_estimated_ergs"],
+                    "energy_true_mech_ergs": row["energy_true_mech_ergs"],
+                    "outlier": row["outlier"],
+                    "used_in_mean": row["used_in_mean"],
+                    "event_status": "ok",
+                })
         except Exception as exc:
             status = "error"
             error = str(exc)
@@ -1038,9 +1139,24 @@ def process_catalog(args) -> None:
     with open(summary_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(summary_rows)
+        writer.writerows(format_csv_rows(summary_rows))
 
     print(f"\nBulk summary written to: {summary_path}")
+
+    station_summary_path = os.path.join(args.output_dir, "theta_all_stations.csv")
+    station_fieldnames = [
+        *CATALOG_FIELDS, "station", "distance_deg", "azimuth_deg",
+        "ray_parameter_s_deg", "ray_parameter_s_km",
+        "theta_estimated", "theta_true_mech",
+        "energy_estimated_ergs", "energy_true_mech_ergs",
+        "outlier", "used_in_mean", "event_status",
+    ]
+    with open(station_summary_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=station_fieldnames)
+        writer.writeheader()
+        writer.writerows(format_csv_rows(station_rows))
+
+    print(f"All station Theta values written to: {station_summary_path}")
 
 
 def main():
@@ -1055,6 +1171,7 @@ Examples:
   python theta_calculator.py run-folder ../BOL_19 --moment 4.2e25 --strike 55 --dip 15 --rake 92
   python theta_calculator.py download-event --event-id BOL_2019 --origin-time 2019-03-15T05:03:50.1 --latitude -17.74 --longitude -65.90 --depth 381 --magnitude 6.3 --moment 4.2e25 --strike 55 --dip 15 --rake 92
   python theta_calculator.py process-downloaded downloads_test/BOL_2019 --remove-outliers
+  python theta_calculator.py download-gcmt-catalog --output globalcmt.ndk --end-year 2025 --end-month 9
   python theta_calculator.py make-catalog globalcmt.ndk --output catalog.csv
   python theta_calculator.py process-catalog catalog.csv --output-dir bulk_results --remove-outliers
 
@@ -1132,6 +1249,17 @@ For more information, see the documentation.
     downloaded_parser.add_argument("--outlier-threshold", type=float, default=3.5, help="Modified-z-score cutoff for outlier removal")
     downloaded_parser.add_argument("--verbose", action="store_true", help="Print full station diagnostics")
 
+    gcmt_parser = subparsers.add_parser(
+        "download-gcmt-catalog",
+        help="Download and combine Global CMT NDK catalog files",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    gcmt_parser.add_argument("--output", required=True, help="Combined output NDK file")
+    gcmt_parser.add_argument("--start-year", type=int, default=1976, help="Catalog start year")
+    gcmt_parser.add_argument("--end-year", type=int, required=True, help="Last year to include")
+    gcmt_parser.add_argument("--end-month", type=int, default=12, help="Last month to include for end year")
+    gcmt_parser.add_argument("--allow-missing", action="store_true", help="Skip unavailable monthly files")
+
     catalog_parser = subparsers.add_parser(
         "make-catalog",
         help="Convert an ObsPy-readable event catalog, such as Global CMT NDK, to THETA CSV",
@@ -1139,6 +1267,8 @@ For more information, see the documentation.
     )
     catalog_parser.add_argument("input", help="Input catalog file readable by ObsPy")
     catalog_parser.add_argument("--output", required=True, help="Output CSV path")
+    catalog_parser.add_argument("--start-date", help="Start date, e.g. 2010-01-01")
+    catalog_parser.add_argument("--end-date", help="End date, e.g. 2025-09-30")
     catalog_parser.add_argument("--min-magnitude", type=float, default=0.0, help="Minimum magnitude")
     catalog_parser.add_argument("--max-magnitude", type=float, default=10.0, help="Maximum magnitude")
     catalog_parser.add_argument("--min-depth", type=float, default=0.0, help="Minimum depth in km")
@@ -1181,6 +1311,8 @@ For more information, see the documentation.
         download_event(args)
     elif args.command == "process-downloaded":
         process_downloaded_folder(args)
+    elif args.command == "download-gcmt-catalog":
+        download_globalcmt_catalog(args)
     elif args.command == "make-catalog":
         make_catalog(args)
     elif args.command == "process-catalog":
